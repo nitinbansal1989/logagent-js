@@ -14,7 +14,8 @@
 		]
 	},
 	"include": [
-		"**/*"
+		"lib/**/*",
+		"bin/**/*"
 	],
 	"exclude": [
 		"typings",
