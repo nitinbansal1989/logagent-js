@@ -1,7 +1,10 @@
 # Kubernetes < v1.9
 # apiVersion: extensions/v1beta1
 # Kubernetes >= v1.9
-apiVersion: extensions/v1beta2
+# apiVersion: extensions/v1beta2
+# Kubernetes v1.10
+# apiVersion: apps/v1beta2
+apiVersion: apps/v1
 kind: DaemonSet
 metadata:
   name: sematext-logagent
@@ -20,8 +23,10 @@ spec:
         image: sematext/logagent:latest
         imagePullPolicy: "Always"
         env:
-        - name: LOGSENE_TOKEN
-          value: "YOUR_LOGSENE_TOKEN"
+          - name: LOGS_TOKEN
+            value: "YOUR_LOGS_TOKEN"
+          - name: LOGS_RECEIVER_URL
+            value: "https://logsene-receiver.sematext.com"
         volumeMounts:
           - mountPath: /var/run/docker.sock
             name: docker-sock

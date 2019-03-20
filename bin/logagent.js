@@ -18,7 +18,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-process.on('unhandledRejection', (p, reason) => {
+process.on('unhandledRejection', (reason, p) => {
   console.log('Possibly Unhandled Rejection at: Promise ', p, 'reason: ', reason)
 })
 var consoleLogger = require('../lib/util/logger.js')
@@ -27,6 +27,8 @@ var LogAnalyzer = require('../lib/parser/parser.js')
 var mkpath = require('mkpath')
 process.setMaxListeners(0)
 var co = require('co')
+const fs = require('fs')
+const request = require('request')
 var moduleAlias = {
   // inputs
   'command': '../lib/plugins/input/command.js',
@@ -44,6 +46,7 @@ var moduleAlias = {
   'input-mqtt-broker': '../lib/plugins/input/mqtt-broker.js',
   'input-mqtt-client': '../lib/plugins/input/mqtt-client.js',
   'input-zeromq': 'logagent-input-zeromq',
+  'input-syslog': '../lib/plugins/input/syslog',
   'apple-location': 'logagent-apple-location',
   'cassandra-query': '../lib/plugins/input/cassandra.js',
   'docker-logs': '../lib/plugins/input/docker/docker.js',
@@ -61,16 +64,51 @@ var moduleAlias = {
   // output plugins
   'elasticsearch': '../lib/plugins/output/elasticsearch.js',
   'slack-webhook': '../lib/plugins/output/slack-webhook.js',
+  'prometheus-alertmanager': '../lib/plugins/output/prometheus-alertmanager.js',
   'output-kafka': 'logagent-output-kafka',
   'output-files': '../lib/plugins/output/files.js',
   'output-gelf': '../lib/plugins/output/gelfout.js',
   'output-aws-elasticsearch': '../lib/plugins/output/aws-elasticsearch.js',
   'output-mqtt': '../lib/plugins/output/mqtt.js',
   'output-zeromq': 'logagent-output-zeromq',
-  'output-influxdb': '../lib/plugins/output/influxdb.js'
+  'output-influxdb': '../lib/plugins/output/influxdb.js',
+  'output-clickhouse': '../lib/plugins/output/clickhouse.js'
+}
+
+function downloadPatterns (cb) {
+  if (!process.env.PATTERNS_URL) {
+    return cb()
+  }
+  fs.unlink('/etc/logagent/patterns.yml', () => {
+    var cbCalled = false
+    var patternFileWs = fs.createWriteStream('/etc/logagent/patterns.yml')
+    patternFileWs.on('error', (ioerr) => {
+      consoleLogger.error('Error writing patterns to /etc/logagent/patterns.yml:' + process.env.PATTERNS_URL + ' ' + ioerr)
+      if (!cbCalled) {
+        cb(ioerr)
+      }
+    })
+    patternFileWs.on('close', () => {
+      consoleLogger.log('Patterns stored in /etc/logagent/patterns.yml (' + process.env.PATTERNS_URL + ')')
+      cb()
+    })
+    try {
+      var req = request.get(process.env.PATTERNS_URL)
+      req.on('error', (error) => {
+        consoleLogger.error('Patterns download failed: ' + process.env.PATTERNS_URL + ' ' + error)
+      }).on('response', (response) => {
+        consoleLogger.log('Patterns downloaded ' + process.env.PATTERNS_URL + ' ')
+      }).pipe(patternFileWs)
+    } catch (ex) {
+      consoleLogger.error(ex.message)
+      cbCalled = true
+      cb(ex)
+    }
+  })
 }
 
 function LaCli (options) {
+  downloadPatterns(function () {})
   this.eventEmitter = require('../lib/core/logEventEmitter.js')
   this.eventEmitter.on('error', function (err) {
     consoleLogger.error(err)
@@ -82,7 +120,7 @@ function LaCli (options) {
   this.argv = options || require('../lib/core/cliArgs.js')
 
   this.globPattern = this.argv.glob || process.env.GLOB_PATTERN
-  this.logseneToken = this.argv.index || process.env.LOGSENE_TOKEN
+  this.logseneToken = this.argv.index || process.env.LOGSENE_TOKEN || process.env.LOGS_TOKEN
   this.loggers = {}
   this.WORKERS = process.env.WEB_CONCURRENCY || 1
   this.removeAnsiColor = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g
@@ -150,8 +188,8 @@ LaCli.prototype.loadPlugins = function (configFile) {
     stdInConfig = this.argv
   }
   var plugins = [
-    {module: '../lib/plugins/input/stdin', config: stdInConfig, globalConfig: configFile},
-    {module: '../lib/plugins/output/stdout', config: stdOutConfig, globalConfig: configFile}
+    { module: '../lib/plugins/input/stdin', config: stdInConfig, globalConfig: configFile },
+    { module: '../lib/plugins/output/stdout', config: stdOutConfig, globalConfig: configFile }
   ]
   // load 3rd paty modules
   if (configFile && configFile.input) {
@@ -266,9 +304,6 @@ LaCli.prototype.loadPlugins = function (configFile) {
       }
     })
   }
-  if (this.argv.rtailPort) {
-    plugins.push('../lib/plugins/output/rtail')
-  }
   if ((this.argv.args && this.argv.args.length > 0) || this.argv.glob) {
     plugins.push('../lib/plugins/input/files')
     this.argv.stdinExitEnabled = false
@@ -365,16 +400,16 @@ LaCli.prototype.initState = function () {
               self.eventEmitter.parsedEvent(filteredData, context)
             }
           }, function (e) {
-              // consoleLogger.error(e.stack)
+            // consoleLogger.error(e.stack)
           })
         }
       }
 
       setImmediate(function laParse () {
         self.la.parseLine(
-            trimmedLine.replace(self.removeAnsiColor, ''),
-            context.sourceName || self.argv.sourceName,
-            parserCb)
+          trimmedLine.replace(self.removeAnsiColor, ''),
+          context.sourceName || self.argv.sourceName,
+          parserCb)
       })
     }, function (e) {
       // consoleLogger.error(e.stack)
@@ -385,6 +420,7 @@ LaCli.prototype.initState = function () {
   process.once('SIGQUIT', function () { self.terminate('SIGQUIT') })
   process.once('SIGTERM', function () { self.terminate('SIGTERM') })
   process.once('beforeExit', self.terminate)
+  process.once('uncaughtException', function (error) { self.terminate(error.message) })
 }
 
 LaCli.prototype.log = function (err, data) {
